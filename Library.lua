@@ -1146,7 +1146,7 @@ do
         local PickOuter = Library:Create('Frame', {
             BackgroundColor3 = Color3.new(0, 0, 0);
             BorderColor3 = Color3.new(0, 0, 0);
-            Size = UDim2.new(0, 28, 0, 15);
+            Size = UDim2.new(0, 44, 0, 15);
             ZIndex = 6;
             Parent = ToggleLabel;
         });
@@ -1166,13 +1166,24 @@ do
         });
 
         local DisplayLabel = Library:CreateLabel({
-            Size = UDim2.new(1, 0, 1, 0);
+            Position = UDim2.fromOffset(2, 0);
+            Size = UDim2.new(1, -4, 1, 0);
             TextSize = 13;
-            Text = Info.Default;
-            TextWrapped = true;
+            Text = tostring(Info.Default);
+            TextWrapped = false;
+            TextTruncate = Enum.TextTruncate.None;
             ZIndex = 8;
             Parent = PickInner;
         });
+
+        local function ResizePicker(Text)
+            local Value = tostring(Text or '')
+            local Width = select(1, Library:GetTextBounds(Value, Library.Font, 13))
+            PickOuter.Size = UDim2.fromOffset(math.max(44, math.ceil(Width) + 14), 15)
+            DisplayLabel.Text = Value
+        end
+
+        ResizePicker(Info.Default)
 
         local ModeSelectOuter = Library:Create('Frame', {
             BorderColor3 = Color3.new(0, 0, 0);
@@ -1318,6 +1329,7 @@ do
         function KeyPicker:SetValue(Data)
             local Key, Mode = Data[1], Data[2];
             DisplayLabel.Text = Key;
+            ResizePicker(Key);
             KeyPicker.Value = Key;
             ModeButtons[Mode]:Select();
             KeyPicker:Update();
@@ -1364,6 +1376,7 @@ do
 
                         Text = Text .. '.';
                         DisplayLabel.Text = Text;
+                        ResizePicker(Text);
 
                         wait(0.4);
                     end;
@@ -1387,6 +1400,7 @@ do
                     Picking = false;
 
                     DisplayLabel.Text = Key;
+                    ResizePicker(Key);
                     KeyPicker.Value = Key;
 
                     Library:SafeCallback(KeyPicker.ChangedCallback, Input.KeyCode or Input.UserInputType)
