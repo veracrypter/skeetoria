@@ -36,11 +36,46 @@ local SaveManager = {} do
 		},
 		ColorPicker = {
 			Save = function(idx, object)
-				return { type = 'ColorPicker', idx = idx, value = object.Value:ToHex(), transparency = object.Transparency }
+				local state = object.GetAnimationState and object:GetAnimationState() or nil
+				local primaryColor = state and state.Color1 or object.Value
+				local primaryTransparency = state and state.Transparency1 or object.Transparency
+				local result = { type = 'ColorPicker', idx = idx, value = primaryColor:ToHex(), transparency = primaryTransparency }
+				if state then
+					result.animation = {
+						mode = state.Mode,
+						speed = state.Speed,
+						color1 = state.Color1:ToHex(),
+						transparency1 = state.Transparency1,
+						color2 = state.Color2:ToHex(),
+						transparency2 = state.Transparency2
+					}
+				end
+				return result
 			end,
 			Load = function(idx, data)
 				if Options[idx] then
-					Options[idx]:SetValueRGB(Color3.fromHex(data.value), data.transparency)
+					local option = Options[idx]
+					local animation = type(data.animation) == 'table' and data.animation or nil
+					if animation and option.SetAnimationState then
+						option:SetAnimationState({
+							Mode = animation.mode,
+							Speed = animation.speed,
+							Color1 = Color3.fromHex(animation.color1 or data.value),
+							Transparency1 = animation.transparency1 ~= nil and animation.transparency1 or data.transparency,
+							Color2 = Color3.fromHex(animation.color2 or animation.color1 or data.value),
+							Transparency2 = animation.transparency2 ~= nil and animation.transparency2 or data.transparency
+						})
+					elseif option.SetAnimationState then
+						option:SetAnimationState({
+							Mode = 'Static',
+							Color1 = Color3.fromHex(data.value),
+							Transparency1 = data.transparency,
+							Color2 = Color3.fromHex(data.value),
+							Transparency2 = data.transparency
+						})
+					else
+						option:SetValueRGB(Color3.fromHex(data.value), data.transparency)
+					end
 				end
 			end,
 		},
