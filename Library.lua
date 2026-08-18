@@ -5,6 +5,7 @@ local Teams = game:GetService('Teams');
 local Players = game:GetService('Players');
 local RunService = game:GetService('RunService')
 local TweenService = game:GetService('TweenService');
+local Workspace = game:GetService('Workspace');
 local RenderStepped = RunService.RenderStepped;
 local LocalPlayer = Players.LocalPlayer;
 local Mouse = LocalPlayer:GetMouse();
@@ -47,6 +48,12 @@ local Library = {
 
     Signals = {};
     ScreenGui = ScreenGui;
+    ActivePointerOwner = nil;
+    ActivePointerInput = nil;
+    TouchMoveThreshold = 10;
+    IsTouchDevice = InputService.TouchEnabled;
+    IsMobile = InputService.TouchEnabled and not InputService.KeyboardEnabled;
+    MobileControlHeight = 28;
 };
 
 Library.EmbeddedIconCacheFolder = 'SkeetLinoriaAssets';
@@ -188,22 +195,38 @@ end;
 
 local RainbowStep = 0
 local Hue = 0
+local AnimatedColorPickerStep = 0
+Library.AnimatedColorPickers = setmetatable({}, { __mode = 'k' });
 
 table.insert(Library.Signals, RenderStepped:Connect(function(Delta)
     RainbowStep = RainbowStep + Delta
-
     if RainbowStep >= (1 / 60) then
         RainbowStep = 0
-
         Hue = Hue + (1 / 400);
-
         if Hue > 1 then
             Hue = 0;
         end;
-
         Library.CurrentRainbowHue = Hue;
         Library.CurrentRainbowColor = Color3.fromHSV(Hue, 0.8, 1);
     end
+
+    AnimatedColorPickerStep = AnimatedColorPickerStep + Delta;
+    if AnimatedColorPickerStep >= (1 / 30) then
+        AnimatedColorPickerStep = 0;
+        local Now = os.clock();
+        for ColorPicker in next, Library.AnimatedColorPickers do
+            if ColorPicker.AnimationMode ~= 'Static' and ColorPicker.AnimationTick then
+                if not ColorPicker.DisplayFrame or not ColorPicker.DisplayFrame.Parent then
+                    Library.AnimatedColorPickers[ColorPicker] = nil;
+                else
+                    local Success = pcall(ColorPicker.AnimationTick, ColorPicker, Now);
+                    if not Success then
+                        Library.AnimatedColorPickers[ColorPicker] = nil;
+                    end;
+                end;
+            end;
+        end;
+    end;
 end))
 
 local function GetPlayersString()
@@ -255,6 +278,141 @@ end;
 function Library:AttemptSave()
     if Library.SaveManager then
         Library.SaveManager:Save();
+    end;
+end;
+
+function Library:GetViewportSize()
+    local Camera = Workspace.CurrentCamera;
+    return Camera and Camera.ViewportSize or Vector2.new(1920, 1080);
+end;
+
+function Library:IsPrimaryInput(Input)
+    if not Input then return false; end;
+    return Input.UserInputType == Enum.UserInputType.MouseButton1
+        or (Library.IsTouchDevice and Input.UserInputType == Enum.UserInputType.Touch);
+end;
+
+function Library:GetRawPointerPosition(Input)
+    if Input and Input.UserInputType == Enum.UserInputType.Touch and Input.Position then
+        return Vector2.new(Input.Position.X, Input.Position.Y);
+    end;
+    return InputService:GetMouseLocation();
+end;
+
+function Library:GetInputPosition(Input)
+    local Position = Library:GetRawPointerPosition(Input);
+    if Input and Input.UserInputType == Enum.UserInputType.Touch then
+        return Position;
+    end;
+    if not ScreenGui.IgnoreGuiInset then
+        local TopLeftInset = game:GetService('GuiService'):GetGuiInset();
+        Position = Position - Vector2.new(TopLeftInset.X, TopLeftInset.Y);
+    end;
+    return Position;
+end;
+
+function Library:IsInputActive(Input)
+    if not Input then return false; end;
+    if Input.UserInputType == Enum.UserInputType.Touch then
+        return Input.UserInputState ~= Enum.UserInputState.End
+            and Input.UserInputState ~= Enum.UserInputState.Cancel;
+    end;
+    if Input.UserInputType == Enum.UserInputType.MouseButton1 then
+        return InputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1);
+    end;
+    return false;
+end;
+
+function Library:IsSameInput(Input, ActiveInput)
+    if not Input or not ActiveInput then return false; end;
+    if Input == ActiveInput then return true; end;
+    return Input.UserInputType == Enum.UserInputType.MouseButton1
+        and ActiveInput.UserInputType == Enum.UserInputType.MouseButton1;
+end;
+
+function Library:ClaimPointer(Owner, Input)
+    if not Owner or not Library:IsPrimaryInput(Input) then return false; end;
+    if Library.ActivePointerOwner then
+        if Library.ActivePointerOwner == Owner and Library:IsSameInput(Input, Library.ActivePointerInput) then
+            return true;
+        end;
+        if Library:IsInputActive(Library.ActivePointerInput) then
+            return false;
+        end;
+    end;
+    Library.ActivePointerOwner = Owner;
+    Library.ActivePointerInput = Input;
+    return true;
+end;
+
+function Library:ReleasePointer(Owner, Input)
+    if Library.ActivePointerOwner ~= Owner then return; end;
+    if Input and not Library:IsSameInput(Input, Library.ActivePointerInput) then return; end;
+    Library.ActivePointerOwner = nil;
+    Library.ActivePointerInput = nil;
+end;
+
+function Library:BindClick(Instance, Callback)
+    Instance.Active = true;
+    local Owner = {};
+    local PressInput;
+    local PressPosition;
+
+    Instance.InputBegan:Connect(function(Input)
+        if not Library:IsPrimaryInput(Input) then return; end;
+        if not Library:ClaimPointer(Owner, Input) then return; end;
+        PressInput = Input;
+        PressPosition = Library:GetInputPosition(Input);
+        if Input.UserInputType ~= Enum.UserInputType.Touch then
+            Library:SafeCallback(Callback, Input);
+        end;
+    end);
+
+    Library:GiveSignal(InputService.InputEnded:Connect(function(Input)
+        if not Library:IsSameInput(Input, PressInput) then return; end;
+        if Input.UserInputType == Enum.UserInputType.Touch and Library.ActivePointerOwner == Owner then
+            local EndPosition = Library:GetInputPosition(Input);
+            local Travel = (EndPosition - PressPosition).Magnitude;
+            if Travel <= Library.TouchMoveThreshold and Library:IsMouseOverFrame(Instance, Input) then
+                Library:SafeCallback(Callback, Input);
+            end;
+        end;
+        PressInput = nil;
+        PressPosition = nil;
+        Library:ReleasePointer(Owner, Input);
+    end));
+
+    return Owner;
+end;
+
+function Library:ClampPopupPosition(Frame, X, Y, Padding)
+    local Viewport = Library:GetViewportSize();
+    local FrameSize = Frame.AbsoluteSize;
+    local Width = FrameSize.X > 0 and FrameSize.X or Frame.Size.X.Offset;
+    local Height = FrameSize.Y > 0 and FrameSize.Y or Frame.Size.Y.Offset;
+    local Edge = Padding or 6;
+    return UDim2.fromOffset(
+        math.clamp(X, Edge, math.max(Edge, Viewport.X - Width - Edge)),
+        math.clamp(Y, Edge, math.max(Edge, Viewport.Y - Height - Edge))
+    );
+end;
+
+function Library:CloseOpenedFrames(Except)
+    local Pending = {};
+    for Frame, CloseCallback in next, Library.OpenedFrames do
+        if Frame ~= Except then
+            table.insert(Pending, { Frame, CloseCallback });
+        end;
+    end;
+    for _, Entry in next, Pending do
+        local Frame = Entry[1];
+        local CloseCallback = Entry[2];
+        if type(CloseCallback) == 'function' then
+            Library:SafeCallback(CloseCallback);
+        else
+            Frame.Visible = false;
+            Library.OpenedFrames[Frame] = nil;
+        end;
     end;
 end;
 
@@ -413,24 +571,22 @@ function Library:OnHighlight(HighlightInstance, Instance, Properties, Properties
     end)
 end;
 
-function Library:MouseIsOverOpenedFrame()
+function Library:MouseIsOverOpenedFrame(Input)
+    local Pointer = Library:GetInputPosition(Input);
     for Frame, _ in next, Library.OpenedFrames do
         local AbsPos, AbsSize = Frame.AbsolutePosition, Frame.AbsoluteSize;
-
-        if Mouse.X >= AbsPos.X and Mouse.X <= AbsPos.X + AbsSize.X
-            and Mouse.Y >= AbsPos.Y and Mouse.Y <= AbsPos.Y + AbsSize.Y then
-
+        if Pointer.X >= AbsPos.X and Pointer.X <= AbsPos.X + AbsSize.X
+            and Pointer.Y >= AbsPos.Y and Pointer.Y <= AbsPos.Y + AbsSize.Y then
             return true;
         end;
     end;
 end;
 
-function Library:IsMouseOverFrame(Frame)
+function Library:IsMouseOverFrame(Frame, Input)
+    local Pointer = Library:GetInputPosition(Input);
     local AbsPos, AbsSize = Frame.AbsolutePosition, Frame.AbsoluteSize;
-
-    if Mouse.X >= AbsPos.X and Mouse.X <= AbsPos.X + AbsSize.X
-        and Mouse.Y >= AbsPos.Y and Mouse.Y <= AbsPos.Y + AbsSize.Y then
-
+    if Pointer.X >= AbsPos.X and Pointer.X <= AbsPos.X + AbsSize.X
+        and Pointer.Y >= AbsPos.Y and Pointer.Y <= AbsPos.Y + AbsSize.Y then
         return true;
     end;
 end;
@@ -541,12 +697,22 @@ do
 
     function Funcs:AddColorPicker(Idx, Info)
         local ToggleLabel = self.TextLabel;
-
         assert(Info.Default, 'AddColorPicker: Missing default value.');
+
+        local SupportsTransparency = Info.Transparency ~= nil;
 
         local ColorPicker = {
             Value = Info.Default;
             Transparency = Info.Transparency or 0;
+            Color1 = Info.Default;
+            Transparency1 = Info.Transparency or 0;
+            Color2 = Info.SecondColor or Info.Default;
+            Transparency2 = Info.SecondTransparency or Info.Transparency or 0;
+            AnimationMode = 'Static';
+            AnimationSpeed = 1;
+            EditingAnimationColor = 1;
+            EditorTransparency = Info.Transparency or 0;
+            SupportsTransparency = SupportsTransparency;
             Type = 'ColorPicker';
             Title = type(Info.Title) == 'string' and Info.Title or 'Color picker',
             Callback = Info.Callback or function(Color) end;
@@ -562,40 +728,89 @@ do
 
         ColorPicker:SetHSVFromRGB(ColorPicker.Value);
 
-        local DisplayFrame = Library:Create('Frame', {
+        local PickerMapSize = Library.IsMobile and 170 or 200;
+        local HueSelectorWidth = Library.IsMobile and 22 or 15;
+        local PickerControlHeight = Library.IsMobile and Library.MobileControlHeight or 20;
+        local PickerSliderHeight = Library.IsMobile and 22 or 13;
+        local PickerMapY = 25 + PickerControlHeight + 3;
+        local PickerFieldsY = PickerMapY + PickerMapSize + 3;
+        local PickerWidth = 4 + PickerMapSize + 4 + HueSelectorWidth + 7;
+        local BasePickerHeight = PickerFieldsY + (SupportsTransparency and 43 or 25);
+        local AnimationControlGap = 4;
+        local AnimationPanelPadding = 4;
+        local AnimationPanelHeight = 12 + (PickerControlHeight * 3)
+            + (AnimationControlGap * 3) + PickerSliderHeight;
+
+        local DisplayFrame = Library:Create('TextButton', {
+            Active = true;
+            AutoButtonColor = false;
             BackgroundColor3 = ColorPicker.Value;
             BorderColor3 = Library:GetDarkerColor(ColorPicker.Value);
             BorderMode = Enum.BorderMode.Inset;
-            Size = UDim2.new(0, 28, 0, 14);
-            ZIndex = 6;
+            LayoutOrder = 20;
+            Size = Library.IsMobile and UDim2.new(0, 44, 0, 18) or UDim2.new(0, 28, 0, 14);
+            Text = '';
+            ZIndex = 10;
             Parent = ToggleLabel;
         });
 
+
         local CheckerFrame = Library:Create('ImageLabel', {
             BorderSizePixel = 0;
-            Size = UDim2.new(0, 27, 0, 13);
-            ZIndex = 5;
+            Position = UDim2.fromOffset(1, 1);
+            Size = UDim2.new(1, -2, 1, -2);
+            ZIndex = 11;
             Image = 'http://www.roblox.com/asset/?id=12977615774';
-            Visible = not not Info.Transparency;
+            Visible = SupportsTransparency;
             Parent = DisplayFrame;
         });
 
+        local ColorPreview = Library:Create('Frame', {
+            BackgroundColor3 = ColorPicker.Value;
+            BackgroundTransparency = ColorPicker.Transparency;
+            BorderSizePixel = 0;
+            Position = UDim2.fromOffset(1, 1);
+            Size = UDim2.new(1, -2, 1, -2);
+            ZIndex = 12;
+            Parent = DisplayFrame;
+        });
+
+
         local PickerFrameOuter = Library:Create('Frame', {
             Name = 'Color';
+            Active = true;
             BackgroundColor3 = Color3.new(1, 1, 1);
             BorderColor3 = Color3.new(0, 0, 0);
             Position = UDim2.fromOffset(DisplayFrame.AbsolutePosition.X, DisplayFrame.AbsolutePosition.Y + 18),
-            Size = UDim2.fromOffset(230, Info.Transparency and 271 or 253);
+            Size = UDim2.fromOffset(PickerWidth, BasePickerHeight);
             Visible = false;
             ZIndex = 15;
             Parent = ScreenGui,
         });
 
-        DisplayFrame:GetPropertyChangedSignal('AbsolutePosition'):Connect(function()
-            PickerFrameOuter.Position = UDim2.fromOffset(DisplayFrame.AbsolutePosition.X, DisplayFrame.AbsolutePosition.Y + 18);
+        local function UpdatePickerPosition()
+            PickerFrameOuter.Position = Library:ClampPopupPosition(
+                PickerFrameOuter,
+                DisplayFrame.AbsolutePosition.X,
+                DisplayFrame.AbsolutePosition.Y + DisplayFrame.AbsoluteSize.Y + 4
+            );
+        end;
+
+        local PickerPositionConnection;
+        PickerFrameOuter:GetPropertyChangedSignal('Visible'):Connect(function()
+            if PickerFrameOuter.Visible then
+                UpdatePickerPosition();
+                if not PickerPositionConnection then
+                    PickerPositionConnection = DisplayFrame:GetPropertyChangedSignal('AbsolutePosition'):Connect(UpdatePickerPosition);
+                end;
+            elseif PickerPositionConnection then
+                PickerPositionConnection:Disconnect();
+                PickerPositionConnection = nil;
+            end;
         end)
 
         local PickerFrameInner = Library:Create('Frame', {
+            Active = true;
             BackgroundColor3 = Library.BackgroundColor;
             BorderColor3 = Library.OutlineColor;
             BorderMode = Enum.BorderMode.Inset;
@@ -614,8 +829,8 @@ do
 
         local SatVibMapOuter = Library:Create('Frame', {
             BorderColor3 = Color3.new(0, 0, 0);
-            Position = UDim2.new(0, 4, 0, 25);
-            Size = UDim2.new(0, 200, 0, 200);
+            Position = UDim2.new(0, 4, 0, PickerMapY);
+            Size = UDim2.fromOffset(PickerMapSize, PickerMapSize);
             ZIndex = 17;
             Parent = PickerFrameInner;
         });
@@ -630,6 +845,7 @@ do
         });
 
         local SatVibMap = Library:Create('ImageLabel', {
+            Active = true;
             BorderSizePixel = 0;
             Size = UDim2.new(1, 0, 1, 0);
             ZIndex = 18;
@@ -658,13 +874,14 @@ do
 
         local HueSelectorOuter = Library:Create('Frame', {
             BorderColor3 = Color3.new(0, 0, 0);
-            Position = UDim2.new(0, 208, 0, 25);
-            Size = UDim2.new(0, 15, 0, 200);
+            Position = UDim2.fromOffset(8 + PickerMapSize, PickerMapY);
+            Size = UDim2.fromOffset(HueSelectorWidth, PickerMapSize);
             ZIndex = 17;
             Parent = PickerFrameInner;
         });
 
         local HueSelectorInner = Library:Create('Frame', {
+            Active = true;
             BackgroundColor3 = Color3.new(1, 1, 1);
             BorderSizePixel = 0;
             Size = UDim2.new(1, 0, 1, 0);
@@ -676,14 +893,14 @@ do
             BackgroundColor3 = Color3.new(1, 1, 1);
             AnchorPoint = Vector2.new(0, 0.5);
             BorderColor3 = Color3.new(0, 0, 0);
-            Size = UDim2.new(1, 0, 0, 1);
+            Size = UDim2.new(1, 0, 0, Library.IsMobile and 3 or 1);
             ZIndex = 18;
             Parent = HueSelectorInner;
         });
 
         local HueBoxOuter = Library:Create('Frame', {
             BorderColor3 = Color3.new(0, 0, 0);
-            Position = UDim2.fromOffset(4, 228),
+            Position = UDim2.fromOffset(4, PickerFieldsY),
             Size = UDim2.new(0.5, -6, 0, 20),
             ZIndex = 18,
             Parent = PickerFrameInner;
@@ -726,7 +943,7 @@ do
         Library:ApplyTextStroke(HueBox);
 
         local RgbBoxBase = Library:Create(HueBoxOuter:Clone(), {
-            Position = UDim2.new(0.5, 2, 0, 228),
+            Position = UDim2.new(0.5, 2, 0, PickerFieldsY),
             Size = UDim2.new(0.5, -6, 0, 20),
             Parent = PickerFrameInner
         });
@@ -739,16 +956,17 @@ do
 
         local TransparencyBoxOuter, TransparencyBoxInner, TransparencyCursor;
 
-        if Info.Transparency then
+        if SupportsTransparency then
             TransparencyBoxOuter = Library:Create('Frame', {
                 BorderColor3 = Color3.new(0, 0, 0);
-                Position = UDim2.fromOffset(4, 251);
+                Position = UDim2.fromOffset(4, PickerFieldsY + 23);
                 Size = UDim2.new(1, -8, 0, 15);
                 ZIndex = 19;
                 Parent = PickerFrameInner;
             });
 
             TransparencyBoxInner = Library:Create('Frame', {
+                Active = true;
                 BackgroundColor3 = ColorPicker.Value;
                 BorderColor3 = Library.OutlineColor;
                 BorderMode = Enum.BorderMode.Inset;
@@ -778,15 +996,349 @@ do
         end;
 
         local DisplayLabel = Library:CreateLabel({
-            Size = UDim2.new(1, 0, 0, 14);
+            Size = UDim2.new(1, -10, 0, 14);
             Position = UDim2.fromOffset(5, 5);
             TextXAlignment = Enum.TextXAlignment.Left;
             TextSize = 14;
-            Text = ColorPicker.Title,
+            Text = ColorPicker.Title;
+            TextTruncate = Enum.TextTruncate.AtEnd;
             TextWrapped = false;
             ZIndex = 16;
             Parent = PickerFrameInner;
         });
+
+        local PickerPage = 'Color';
+        local AnimationModeButtons = {};
+        local AnimationSlotButtons = {};
+        local AnimationSlotPreviews = {};
+
+        local function CreatePickerStyleButton(Text, Parent, Position, Size, TextSize)
+            local Button = {
+                Selected = false;
+                Hovering = false;
+            };
+
+            Button.Outer = Library:Create('Frame', {
+                Active = true;
+                BackgroundColor3 = Color3.new(0, 0, 0);
+                BorderColor3 = Color3.new(0, 0, 0);
+                BorderSizePixel = 1;
+                Position = Position;
+                Size = Size;
+                ZIndex = 19;
+                Parent = Parent;
+            });
+
+            Button.Inner = Library:Create('Frame', {
+                BackgroundColor3 = Library.MainColor;
+                BorderColor3 = Library.OutlineColor;
+                BorderMode = Enum.BorderMode.Inset;
+                BorderSizePixel = 1;
+                Size = UDim2.new(1, 0, 1, 0);
+                ZIndex = 20;
+                Parent = Button.Outer;
+            });
+
+            Button.Label = Library:CreateLabel({
+                Size = UDim2.new(1, 0, 1, 0);
+                Text = Text;
+                TextSize = TextSize or 14;
+                TextXAlignment = Enum.TextXAlignment.Center;
+                TextYAlignment = Enum.TextYAlignment.Center;
+                ZIndex = 21;
+                Parent = Button.Inner;
+            });
+
+            Library:Create('UIGradient', {
+                Color = ColorSequence.new({
+                    ColorSequenceKeypoint.new(0, Color3.new(1, 1, 1)),
+                    ColorSequenceKeypoint.new(1, Color3.fromRGB(212, 212, 212))
+                });
+                Rotation = 90;
+                Parent = Button.Inner;
+            });
+
+            Library:AddToRegistry(Button.Outer, { BorderColor3 = 'Black'; });
+            Library:AddToRegistry(Button.Inner, {
+                BackgroundColor3 = 'MainColor';
+                BorderColor3 = 'OutlineColor';
+            });
+
+            function Button:RefreshBorder()
+                local ColorKey = (Button.Selected or Button.Hovering) and 'AccentColor' or 'Black';
+                Button.Outer.BorderColor3 = Library[ColorKey];
+
+                local Registry = Library.RegistryMap[Button.Outer];
+                if Registry then
+                    Registry.Properties.BorderColor3 = ColorKey;
+                end;
+            end;
+
+            function Button:SetSelected(Selected)
+                Button.Selected = Selected == true;
+                Button.Inner.BackgroundColor3 = Library.MainColor;
+                Button.Label.TextColor3 = Library.FontColor;
+
+                local InnerRegistry = Library.RegistryMap[Button.Inner];
+                if InnerRegistry then
+                    InnerRegistry.Properties.BackgroundColor3 = 'MainColor';
+                end;
+
+                local LabelRegistry = Library.RegistryMap[Button.Label];
+                if LabelRegistry then
+                    LabelRegistry.Properties.TextColor3 = 'FontColor';
+                end;
+
+                Button:RefreshBorder();
+            end;
+
+            Button.Outer.MouseEnter:Connect(function()
+                Button.Hovering = true;
+                Button:RefreshBorder();
+            end);
+
+            Button.Outer.MouseLeave:Connect(function()
+                Button.Hovering = false;
+                Button:RefreshBorder();
+            end);
+
+            return Button;
+        end;
+
+        local PageButtonHolder = Library:Create('Frame', {
+            BackgroundTransparency = 1;
+            Position = UDim2.fromOffset(4, 24);
+            Size = UDim2.fromOffset(PickerWidth - 8, PickerControlHeight);
+            ZIndex = 18;
+            Parent = PickerFrameInner;
+        });
+
+        local PageGap = ((PickerWidth - 8) % 2 == 0) and 4 or 5;
+        local PageAvailableWidth = PickerWidth - 8 - PageGap;
+        local ColorPageWidth = math.floor(PageAvailableWidth / 2);
+        local AnimationPageWidth = PageAvailableWidth - ColorPageWidth;
+        local ColorPageButton = CreatePickerStyleButton(
+            'Color',
+            PageButtonHolder,
+            UDim2.fromOffset(0, 0),
+            UDim2.fromOffset(ColorPageWidth, PickerControlHeight),
+            14
+        );
+        local AnimationPageButton = CreatePickerStyleButton(
+            'Animation',
+            PageButtonHolder,
+            UDim2.fromOffset(ColorPageWidth + PageGap, 0),
+            UDim2.fromOffset(AnimationPageWidth, PickerControlHeight),
+            14
+        );
+
+        local AnimationPanel = Library:Create('Frame', {
+            BackgroundTransparency = 1;
+            BorderSizePixel = 0;
+            Position = UDim2.fromOffset(0, BasePickerHeight - 1);
+            Size = UDim2.new(1, 0, 0, AnimationPanelHeight - 4);
+            Visible = false;
+            ZIndex = 18;
+            Parent = PickerFrameInner;
+        });
+
+        local AnimationModes = { 'Static', 'Rainbow', 'Fading', 'Flash' };
+        local TwoColumnWidth = math.floor((PickerWidth - 8 - PageGap) / 2);
+
+        for ModeIndex, Mode in ipairs(AnimationModes) do
+            local ModeName = Mode;
+            local Column = (ModeIndex - 1) % 2;
+            local Row = math.floor((ModeIndex - 1) / 2);
+            local Button = CreatePickerStyleButton(
+                ModeName,
+                AnimationPanel,
+                UDim2.fromOffset(
+                    AnimationPanelPadding + (Column * (TwoColumnWidth + PageGap)),
+                    AnimationPanelPadding + (Row * (PickerControlHeight + AnimationControlGap))
+                ),
+                UDim2.fromOffset(TwoColumnWidth, PickerControlHeight),
+                14
+            );
+            AnimationModeButtons[ModeName] = Button;
+
+            Library:BindClick(Button.Outer, function()
+                ColorPicker:SetAnimationMode(ModeName, true);
+            end);
+        end;
+
+        local SlotY = AnimationPanelPadding + ((PickerControlHeight + AnimationControlGap) * 2);
+
+        for Slot = 1, 2 do
+            local SlotIndex = Slot;
+            local Button = CreatePickerStyleButton(
+                'Color ' .. tostring(SlotIndex),
+                AnimationPanel,
+                UDim2.fromOffset(
+                    AnimationPanelPadding + ((SlotIndex - 1) * (TwoColumnWidth + PageGap)),
+                    SlotY
+                ),
+                UDim2.fromOffset(TwoColumnWidth, PickerControlHeight),
+                14
+            );
+            Button.Label.Position = UDim2.fromOffset(0, 0);
+            Button.Label.Size = UDim2.new(1, 0, 1, 0);
+
+            local SwatchOuter = Library:Create('Frame', {
+                BackgroundColor3 = Color3.new(0, 0, 0);
+                BorderColor3 = Color3.new(0, 0, 0);
+                BorderMode = Enum.BorderMode.Inset;
+                BorderSizePixel = 1;
+                Position = UDim2.fromOffset(4, math.floor((PickerControlHeight - 12) / 2));
+                Size = UDim2.fromOffset(12, 12);
+                ZIndex = 22;
+                Parent = Button.Inner;
+            });
+
+            Library:Create('ImageLabel', {
+                BackgroundTransparency = 1;
+                BorderSizePixel = 0;
+                Position = UDim2.fromOffset(1, 1);
+                Size = UDim2.new(1, -2, 1, -2);
+                Image = 'http://www.roblox.com/asset/?id=12977615774';
+                Visible = SupportsTransparency;
+                ZIndex = 23;
+                Parent = SwatchOuter;
+            });
+
+            local Preview = Library:Create('Frame', {
+                BackgroundColor3 = SlotIndex == 1 and ColorPicker.Color1 or ColorPicker.Color2;
+                BackgroundTransparency = SlotIndex == 1 and ColorPicker.Transparency1 or ColorPicker.Transparency2;
+                BorderSizePixel = 0;
+                Position = UDim2.fromOffset(1, 1);
+                Size = UDim2.new(1, -2, 1, -2);
+                ZIndex = 24;
+                Parent = SwatchOuter;
+            });
+
+            AnimationSlotButtons[SlotIndex] = Button;
+            AnimationSlotPreviews[SlotIndex] = Preview;
+
+            Library:BindClick(Button.Outer, function()
+                ColorPicker:SetEditingAnimationColor(SlotIndex);
+            end);
+        end;
+
+        local SpeedBarOuter = Library:Create('Frame', {
+            Active = true;
+            BackgroundColor3 = Color3.new(0, 0, 0);
+            BorderColor3 = Color3.new(0, 0, 0);
+            Position = UDim2.fromOffset(
+                AnimationPanelPadding,
+                SlotY + PickerControlHeight + AnimationControlGap
+            );
+            Size = UDim2.new(1, -(AnimationPanelPadding * 2), 0, PickerSliderHeight);
+            ZIndex = 19;
+            Parent = AnimationPanel;
+        });
+        Library:AddToRegistry(SpeedBarOuter, { BorderColor3 = 'Black'; });
+
+        local SpeedBarInner = Library:Create('Frame', {
+            Active = true;
+            BackgroundColor3 = Library.MainColor;
+            BorderColor3 = Library.OutlineColor;
+            BorderMode = Enum.BorderMode.Inset;
+            Size = UDim2.new(1, 0, 1, 0);
+            ZIndex = 20;
+            Parent = SpeedBarOuter;
+        });
+        Library:AddToRegistry(SpeedBarInner, { BackgroundColor3 = 'MainColor'; BorderColor3 = 'OutlineColor'; });
+
+        local SpeedBarFill = Library:Create('Frame', {
+            BackgroundColor3 = Library.AccentColor;
+            BorderColor3 = Library.AccentColorDark;
+            Size = UDim2.new(0, 0, 1, 0);
+            ZIndex = 21;
+            Parent = SpeedBarInner;
+        });
+        Library:AddToRegistry(SpeedBarFill, {
+            BackgroundColor3 = 'AccentColor';
+            BorderColor3 = 'AccentColorDark';
+        });
+
+        local SpeedBarHideBorderRight = Library:Create('Frame', {
+            BackgroundColor3 = Library.AccentColor;
+            BorderSizePixel = 0;
+            Position = UDim2.new(1, 0, 0, 0);
+            Size = UDim2.new(0, 1, 1, 0);
+            ZIndex = 22;
+            Parent = SpeedBarFill;
+        });
+        Library:AddToRegistry(SpeedBarHideBorderRight, { BackgroundColor3 = 'AccentColor'; });
+
+        local SpeedLabel = Library:CreateLabel({
+            Active = false;
+            BackgroundTransparency = 1;
+            Size = UDim2.new(1, 0, 1, 0);
+            Text = 'Speed: 1.00x';
+            TextSize = 14;
+            ZIndex = 23;
+            Parent = SpeedBarInner;
+        });
+
+        Library:OnHighlight(SpeedBarOuter, SpeedBarOuter,
+            { BorderColor3 = 'AccentColor' },
+            { BorderColor3 = 'Black' }
+        );
+
+        local function SetButtonSelected(Button, Selected)
+            Button:SetSelected(Selected);
+        end;
+
+        local function UpdateSpeedVisual()
+            local MaxSize = math.max(SpeedBarInner.AbsoluteSize.X, 1);
+            local Percent = math.clamp((ColorPicker.AnimationSpeed - 0.1) / 4.9, 0, 1);
+            local FillWidth = math.clamp(math.ceil(Percent * MaxSize), 0, MaxSize);
+            SpeedBarFill.Size = UDim2.new(0, FillWidth, 1, 0);
+            SpeedBarHideBorderRight.Visible = not (FillWidth == 0 or FillWidth == MaxSize);
+            SpeedLabel.Text = string.format('Speed: %.2fx', ColorPicker.AnimationSpeed);
+        end;
+
+        local function UpdateAnimationControls()
+            for Mode, Button in pairs(AnimationModeButtons) do
+                SetButtonSelected(Button, ColorPicker.AnimationMode == Mode);
+            end;
+
+            for Slot, Button in pairs(AnimationSlotButtons) do
+                SetButtonSelected(Button, ColorPicker.EditingAnimationColor == Slot);
+            end;
+
+            AnimationSlotPreviews[1].BackgroundColor3 = ColorPicker.Color1;
+            AnimationSlotPreviews[1].BackgroundTransparency = SupportsTransparency and ColorPicker.Transparency1 or 0;
+            AnimationSlotPreviews[2].BackgroundColor3 = ColorPicker.Color2;
+            AnimationSlotPreviews[2].BackgroundTransparency = SupportsTransparency and ColorPicker.Transparency2 or 0;
+
+            UpdateSpeedVisual();
+
+            local IsAnimationPage = PickerPage == 'Animation';
+            AnimationPanel.Visible = IsAnimationPage;
+            PickerFrameOuter.Size = UDim2.fromOffset(
+                PickerWidth,
+                BasePickerHeight + (IsAnimationPage and AnimationPanelHeight or 0)
+            );
+
+            SetButtonSelected(ColorPageButton, not IsAnimationPage);
+            SetButtonSelected(AnimationPageButton, IsAnimationPage);
+
+            if PickerFrameOuter.Visible then
+                UpdatePickerPosition();
+            end;
+        end;
+
+        SpeedBarInner:GetPropertyChangedSignal('AbsoluteSize'):Connect(UpdateSpeedVisual);
+
+        Library:BindClick(ColorPageButton.Outer, function()
+            ColorPicker:SetPickerPage('Color');
+        end);
+
+        Library:BindClick(AnimationPageButton.Outer, function()
+            ColorPicker:SetPickerPage('Animation');
+        end);
+
 
         local ContextMenu = {}
         do
@@ -822,10 +1374,11 @@ do
             });
 
             local function updateMenuPosition()
-                ContextMenu.Container.Position = UDim2.fromOffset(
+                ContextMenu.Container.Position = Library:ClampPopupPosition(
+                    ContextMenu.Container,
                     (DisplayFrame.AbsolutePosition.X + DisplayFrame.AbsoluteSize.X) + 4,
                     DisplayFrame.AbsolutePosition.Y + 1
-                )
+                );
             end
 
             local function updateMenuSize()
@@ -842,7 +1395,18 @@ do
                 )
             end
 
-            DisplayFrame:GetPropertyChangedSignal('AbsolutePosition'):Connect(updateMenuPosition)
+            local MenuPositionConnection
+            ContextMenu.Container:GetPropertyChangedSignal('Visible'):Connect(function()
+                if ContextMenu.Container.Visible then
+                    updateMenuPosition();
+                    if not MenuPositionConnection then
+                        MenuPositionConnection = DisplayFrame:GetPropertyChangedSignal('AbsolutePosition'):Connect(updateMenuPosition)
+                    end
+                elseif MenuPositionConnection then
+                    MenuPositionConnection:Disconnect()
+                    MenuPositionConnection = nil
+                end;
+            end)
             ContextMenu.Inner.Layout:GetPropertyChangedSignal('AbsoluteContentSize'):Connect(updateMenuSize)
 
             task.spawn(updateMenuPosition)
@@ -854,6 +1418,7 @@ do
             });
 
             function ContextMenu:Show()
+                updateMenuPosition()
                 self.Container.Visible = true
             end
 
@@ -867,7 +1432,7 @@ do
                 end
 
                 local Button = Library:CreateLabel({
-                    Active = false;
+                    Active = true;
                     Size = UDim2.new(1, 0, 0, 15);
                     TextSize = 13;
                     Text = Str;
@@ -881,11 +1446,7 @@ do
                     { TextColor3 = 'FontColor' }
                 );
 
-                Button.InputBegan:Connect(function(Input)
-                    if Input.UserInputType ~= Enum.UserInputType.MouseButton1 then
-                        return
-                    end
-
+                Library:BindClick(Button, function()
                     Callback()
                 end)
             end
@@ -899,8 +1460,10 @@ do
                 if not Library.ColorClipboard then
                     return Library:Notify('You have not copied a color!', 2)
                 end
-                ColorPicker:SetValueRGB(Library.ColorClipboard)
+                ColorPicker:SetEditorValueRGB(Library.ColorClipboard)
+                Library:AttemptSave();
             end)
+
 
             ContextMenu:AddOption('Copy HEX', function()
                 pcall(setclipboard, ColorPicker.Value:ToHex())
@@ -944,6 +1507,7 @@ do
             end
 
             ColorPicker:Display()
+            Library:AttemptSave();
         end)
 
         RgbBox.FocusLost:Connect(function(enter)
@@ -955,48 +1519,226 @@ do
             end
 
             ColorPicker:Display()
+            Library:AttemptSave();
         end)
 
-        function ColorPicker:Display()
-            ColorPicker.Value = Color3.fromHSV(ColorPicker.Hue, ColorPicker.Sat, ColorPicker.Vib);
+        local function ResolveAnimationColor(Value, Fallback)
+            if typeof(Value) == 'Color3' then
+                return Value;
+            end;
+
+            if type(Value) == 'string' then
+                local Success, Result = pcall(Color3.fromHex, Value);
+                if Success and typeof(Result) == 'Color3' then
+                    return Result;
+                end;
+            end;
+
+            return Fallback;
+        end;
+
+        local function ClampTransparency(Value, Fallback)
+            if not SupportsTransparency then
+                return 0;
+            end;
+
+            return math.clamp(tonumber(Value) or Fallback or 0, 0, 1);
+        end;
+
+        function ColorPicker:GetEditorSlot()
+            return PickerPage == 'Animation' and ColorPicker.EditingAnimationColor or 1;
+        end;
+
+        function ColorPicker:UpdateEditorVisuals()
+            local EditorColor = Color3.fromHSV(ColorPicker.Hue, ColorPicker.Sat, ColorPicker.Vib);
             SatVibMap.BackgroundColor3 = Color3.fromHSV(ColorPicker.Hue, 1, 1);
 
-            Library:Create(DisplayFrame, {
-                BackgroundColor3 = ColorPicker.Value;
-                BackgroundTransparency = ColorPicker.Transparency;
-                BorderColor3 = Library:GetDarkerColor(ColorPicker.Value);
-            });
-
             if TransparencyBoxInner then
-                TransparencyBoxInner.BackgroundColor3 = ColorPicker.Value;
-                TransparencyCursor.Position = UDim2.new(1 - ColorPicker.Transparency, 0, 0, 0);
+                TransparencyBoxInner.BackgroundColor3 = EditorColor;
+                TransparencyCursor.Position = UDim2.new(1 - ColorPicker.EditorTransparency, 0, 0, 0);
             end;
 
             CursorOuter.Position = UDim2.new(ColorPicker.Sat, 0, 1 - ColorPicker.Vib, 0);
             HueCursor.Position = UDim2.new(0, 0, ColorPicker.Hue, 0);
+            HueBox.Text = '#' .. EditorColor:ToHex();
+            RgbBox.Text = table.concat({
+                math.floor(EditorColor.R * 255),
+                math.floor(EditorColor.G * 255),
+                math.floor(EditorColor.B * 255)
+            }, ', ');
+        end;
 
-            HueBox.Text = '#' .. ColorPicker.Value:ToHex()
-            RgbBox.Text = table.concat({ math.floor(ColorPicker.Value.R * 255), math.floor(ColorPicker.Value.G * 255), math.floor(ColorPicker.Value.B * 255) }, ', ')
+        function ColorPicker:LoadEditorFromSlot()
+            local Slot = ColorPicker:GetEditorSlot();
+            local Color = Slot == 2 and ColorPicker.Color2 or ColorPicker.Color1;
+            local Transparency = Slot == 2 and ColorPicker.Transparency2 or ColorPicker.Transparency1;
 
-            Library:SafeCallback(ColorPicker.Callback, ColorPicker.Value);
-            Library:SafeCallback(ColorPicker.Changed, ColorPicker.Value);
+            ColorPicker.EditorTransparency = ClampTransparency(Transparency, 0);
+            ColorPicker:SetHSVFromRGB(Color);
+            ColorPicker:UpdateEditorVisuals();
+        end;
+
+        function ColorPicker:GetAnimationOutput(Now)
+            local Mode = ColorPicker.AnimationMode;
+            local Color1 = ColorPicker.Color1;
+            local Color2 = ColorPicker.Color2;
+            local Alpha1 = ColorPicker.Transparency1;
+            local Alpha2 = ColorPicker.Transparency2;
+
+            if Mode == 'Static' then
+                return Color1, Alpha1;
+            end;
+
+            local Phase = (((Now or os.clock()) * ColorPicker.AnimationSpeed) % 1);
+            local Smooth = 0.5 - (math.cos(Phase * math.pi * 2) * 0.5);
+
+            if Mode == 'Rainbow' then
+                local Hue1, Saturation1, Value1 = Color3.toHSV(Color1);
+                local _, Saturation2, Value2 = Color3.toHSV(Color2);
+                local Saturation = math.max(0.65, Saturation1 + ((Saturation2 - Saturation1) * Smooth));
+                local Value = math.max(0.15, Value1 + ((Value2 - Value1) * Smooth));
+                local Color = Color3.fromHSV((Hue1 + Phase) % 1, Saturation, Value);
+                return Color, Alpha1 + ((Alpha2 - Alpha1) * Smooth);
+            end;
+
+            if Mode == 'Flash' then
+                if Phase < 0.5 then
+                    return Color1, Alpha1;
+                end;
+
+                return Color2, Alpha2;
+            end;
+
+            return Color1:Lerp(Color2, Smooth), Alpha1 + ((Alpha2 - Alpha1) * Smooth);
+        end;
+
+        function ColorPicker:ApplyOutput(Color, Transparency, FireCallback)
+            ColorPicker.Value = Color;
+            ColorPicker.Transparency = ClampTransparency(Transparency, 0);
+
+            DisplayFrame.BackgroundColor3 = Color3.new(0, 0, 0);
+            DisplayFrame.BackgroundTransparency = 0;
+            DisplayFrame.BorderColor3 = Library:GetDarkerColor(ColorPicker.Value);
+            ColorPreview.BackgroundColor3 = ColorPicker.Value;
+            ColorPreview.BackgroundTransparency = ColorPicker.Transparency;
+
+            if FireCallback ~= false then
+                Library:SafeCallback(ColorPicker.Callback, ColorPicker.Value, ColorPicker.Transparency);
+                Library:SafeCallback(ColorPicker.Changed, ColorPicker.Value, ColorPicker.Transparency);
+            end;
+        end;
+
+        function ColorPicker:RefreshOutput(FireCallback, Now)
+            local Color, Transparency = ColorPicker:GetAnimationOutput(Now);
+            ColorPicker:ApplyOutput(Color, Transparency, FireCallback);
+        end;
+
+        function ColorPicker:Display()
+            local EditorColor = Color3.fromHSV(ColorPicker.Hue, ColorPicker.Sat, ColorPicker.Vib);
+            local Slot = ColorPicker:GetEditorSlot();
+
+            if Slot == 2 then
+                ColorPicker.Color2 = EditorColor;
+                ColorPicker.Transparency2 = ClampTransparency(ColorPicker.EditorTransparency, ColorPicker.Transparency2);
+            else
+                ColorPicker.Color1 = EditorColor;
+                ColorPicker.Transparency1 = ClampTransparency(ColorPicker.EditorTransparency, ColorPicker.Transparency1);
+            end;
+
+            ColorPicker:UpdateEditorVisuals();
+            ColorPicker:RefreshOutput(true);
+            UpdateAnimationControls();
+        end;
+
+        function ColorPicker:AnimationTick(Now)
+            ColorPicker:RefreshOutput(true, Now);
+        end;
+
+        function ColorPicker:SetPickerPage(Page)
+            PickerPage = Page == 'Animation' and 'Animation' or 'Color';
+            ColorPicker:LoadEditorFromSlot();
+            UpdateAnimationControls();
+        end;
+
+        function ColorPicker:SetEditingAnimationColor(Slot)
+            ColorPicker.EditingAnimationColor = Slot == 2 and 2 or 1;
+            ColorPicker:LoadEditorFromSlot();
+            UpdateAnimationControls();
+        end;
+
+        function ColorPicker:SetAnimationMode(Mode, Save)
+            if Mode ~= 'Static' and Mode ~= 'Rainbow' and Mode ~= 'Fading' and Mode ~= 'Flash' then
+                Mode = 'Static';
+            end;
+
+            ColorPicker.AnimationMode = Mode;
+            ColorPicker:RefreshOutput(true);
+            UpdateAnimationControls();
+
+            if Save then
+                Library:AttemptSave();
+            end;
+        end;
+
+        function ColorPicker:SetAnimationSpeed(Speed, Save)
+            ColorPicker.AnimationSpeed = math.clamp(tonumber(Speed) or 1, 0.1, 5);
+            ColorPicker:RefreshOutput(true);
+            UpdateAnimationControls();
+
+            if Save then
+                Library:AttemptSave();
+            end;
+        end;
+
+        function ColorPicker:GetAnimationState()
+            return {
+                Mode = ColorPicker.AnimationMode;
+                Speed = ColorPicker.AnimationSpeed;
+                Color1 = ColorPicker.Color1;
+                Transparency1 = ColorPicker.Transparency1;
+                Color2 = ColorPicker.Color2;
+                Transparency2 = ColorPicker.Transparency2;
+            };
+        end;
+
+        function ColorPicker:SetAnimationState(State)
+            State = type(State) == 'table' and State or {};
+
+            ColorPicker.Color1 = ResolveAnimationColor(State.Color1 or State.color1 or State.Value or State.value, ColorPicker.Color1);
+            ColorPicker.Color2 = ResolveAnimationColor(State.Color2 or State.color2, ColorPicker.Color2);
+            ColorPicker.Transparency1 = ClampTransparency(
+                State.Transparency1 or State.transparency1 or State.Alpha1 or State.alpha1 or State.Transparency or State.transparency,
+                ColorPicker.Transparency1
+            );
+            ColorPicker.Transparency2 = ClampTransparency(
+                State.Transparency2 or State.transparency2 or State.Alpha2 or State.alpha2,
+                ColorPicker.Transparency2
+            );
+            ColorPicker.AnimationSpeed = math.clamp(tonumber(State.Speed or State.speed) or ColorPicker.AnimationSpeed, 0.1, 5);
+
+            local Mode = State.Mode or State.mode or 'Static';
+            if Mode ~= 'Static' and Mode ~= 'Rainbow' and Mode ~= 'Fading' and Mode ~= 'Flash' then
+                Mode = 'Static';
+            end;
+            ColorPicker.AnimationMode = Mode;
+
+            ColorPicker:LoadEditorFromSlot();
+            ColorPicker:RefreshOutput(true);
+            UpdateAnimationControls();
         end;
 
         function ColorPicker:OnChanged(Func)
             ColorPicker.Changed = Func;
-            Func(ColorPicker.Value)
+            Func(ColorPicker.Value, ColorPicker.Transparency)
         end;
 
         function ColorPicker:Show()
-            for Frame, Val in next, Library.OpenedFrames do
-                if Frame.Name == 'Color' then
-                    Frame.Visible = false;
-                    Library.OpenedFrames[Frame] = nil;
-                end;
-            end;
-
+            Library:CloseOpenedFrames(PickerFrameOuter);
+            UpdatePickerPosition();
             PickerFrameOuter.Visible = true;
-            Library.OpenedFrames[PickerFrameOuter] = true;
+            Library.OpenedFrames[PickerFrameOuter] = function()
+                ColorPicker:Hide();
+            end;
         end;
 
         function ColorPicker:Hide()
@@ -1006,66 +1748,87 @@ do
 
         function ColorPicker:SetValue(HSV, Transparency)
             local Color = Color3.fromHSV(HSV[1], HSV[2], HSV[3]);
-
-            ColorPicker.Transparency = Transparency or 0;
-            ColorPicker:SetHSVFromRGB(Color);
-            ColorPicker:Display();
+            ColorPicker:SetValueRGB(Color, Transparency);
         end;
 
         function ColorPicker:SetValueRGB(Color, Transparency)
-            ColorPicker.Transparency = Transparency or 0;
+            if typeof(Color) ~= 'Color3' then return; end;
+
+            ColorPicker.Color1 = Color;
+            ColorPicker.Transparency1 = ClampTransparency(Transparency, 0);
+
+            if ColorPicker:GetEditorSlot() == 1 then
+                ColorPicker:LoadEditorFromSlot();
+            end;
+
+            ColorPicker:RefreshOutput(true);
+            UpdateAnimationControls();
+        end;
+
+        function ColorPicker:SetEditorValueRGB(Color, Transparency)
+            if typeof(Color) ~= 'Color3' then return; end;
+
             ColorPicker:SetHSVFromRGB(Color);
+            if Transparency ~= nil then
+                ColorPicker.EditorTransparency = ClampTransparency(Transparency, ColorPicker.EditorTransparency);
+            end;
             ColorPicker:Display();
         end;
 
         SatVibMap.InputBegan:Connect(function(Input)
-            if Input.UserInputType == Enum.UserInputType.MouseButton1 then
-                while InputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) do
+            if Library:IsPrimaryInput(Input) then
+                repeat
                     local MinX = SatVibMap.AbsolutePosition.X;
                     local MaxX = MinX + SatVibMap.AbsoluteSize.X;
-                    local MouseX = math.clamp(Mouse.X, MinX, MaxX);
+                    local Pointer = Library:GetInputPosition(Input);
+                    local MouseX = math.clamp(Pointer.X, MinX, MaxX);
 
                     local MinY = SatVibMap.AbsolutePosition.Y;
                     local MaxY = MinY + SatVibMap.AbsoluteSize.Y;
-                    local MouseY = math.clamp(Mouse.Y, MinY, MaxY);
+                    local MouseY = math.clamp(Pointer.Y, MinY, MaxY);
 
                     ColorPicker.Sat = (MouseX - MinX) / (MaxX - MinX);
                     ColorPicker.Vib = 1 - ((MouseY - MinY) / (MaxY - MinY));
                     ColorPicker:Display();
 
                     RenderStepped:Wait();
-                end;
+                until not Library:IsInputActive(Input);
 
                 Library:AttemptSave();
             end;
         end);
 
         HueSelectorInner.InputBegan:Connect(function(Input)
-            if Input.UserInputType == Enum.UserInputType.MouseButton1 then
-                while InputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) do
+            if Library:IsPrimaryInput(Input) then
+                repeat
                     local MinY = HueSelectorInner.AbsolutePosition.Y;
                     local MaxY = MinY + HueSelectorInner.AbsoluteSize.Y;
-                    local MouseY = math.clamp(Mouse.Y, MinY, MaxY);
+                    local Pointer = Library:GetInputPosition(Input);
+                    local MouseY = math.clamp(Pointer.Y, MinY, MaxY);
 
                     ColorPicker.Hue = ((MouseY - MinY) / (MaxY - MinY));
                     ColorPicker:Display();
 
                     RenderStepped:Wait();
-                end;
+                until not Library:IsInputActive(Input);
 
                 Library:AttemptSave();
             end;
         end);
 
-        DisplayFrame.InputBegan:Connect(function(Input)
-            if Input.UserInputType == Enum.UserInputType.MouseButton1 and not Library:MouseIsOverOpenedFrame() then
+        Library:BindClick(DisplayFrame, function(Input)
+            if not Library:MouseIsOverOpenedFrame(Input) then
                 if PickerFrameOuter.Visible then
                     ColorPicker:Hide()
                 else
                     ContextMenu:Hide()
                     ColorPicker:Show()
                 end;
-            elseif Input.UserInputType == Enum.UserInputType.MouseButton2 and not Library:MouseIsOverOpenedFrame() then
+            end;
+        end);
+
+        DisplayFrame.InputBegan:Connect(function(Input)
+            if Input.UserInputType == Enum.UserInputType.MouseButton2 and not Library:MouseIsOverOpenedFrame(Input) then
                 ContextMenu:Show()
                 ColorPicker:Hide()
             end
@@ -1073,48 +1836,73 @@ do
 
         if TransparencyBoxInner then
             TransparencyBoxInner.InputBegan:Connect(function(Input)
-                if Input.UserInputType == Enum.UserInputType.MouseButton1 then
-                    while InputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) do
+                if Library:IsPrimaryInput(Input) then
+                    repeat
                         local MinX = TransparencyBoxInner.AbsolutePosition.X;
                         local MaxX = MinX + TransparencyBoxInner.AbsoluteSize.X;
-                        local MouseX = math.clamp(Mouse.X, MinX, MaxX);
+                        local Pointer = Library:GetInputPosition(Input);
+                        local MouseX = math.clamp(Pointer.X, MinX, MaxX);
 
-                        ColorPicker.Transparency = 1 - ((MouseX - MinX) / (MaxX - MinX));
+                        ColorPicker.EditorTransparency = 1 - ((MouseX - MinX) / (MaxX - MinX));
 
                         ColorPicker:Display();
 
                         RenderStepped:Wait();
-                    end;
+                    until not Library:IsInputActive(Input);
 
                     Library:AttemptSave();
                 end;
             end);
         end;
 
-        Library:GiveSignal(InputService.InputBegan:Connect(function(Input)
-            if Input.UserInputType == Enum.UserInputType.MouseButton1 then
-                local AbsPos, AbsSize = PickerFrameOuter.AbsolutePosition, PickerFrameOuter.AbsoluteSize;
+        SpeedBarInner.InputBegan:Connect(function(Input)
+            if Library:IsPrimaryInput(Input) then
+                repeat
+                    local MinX = SpeedBarInner.AbsolutePosition.X;
+                    local MaxX = MinX + SpeedBarInner.AbsoluteSize.X;
+                    local Pointer = Library:GetInputPosition(Input);
+                    local MouseX = math.clamp(Pointer.X, MinX, MaxX);
+                    local Percent = (MouseX - MinX) / math.max(MaxX - MinX, 1);
+                    local Speed = 0.1 + (Percent * 4.9);
+                    Speed = math.floor((Speed * 100) + 0.5) / 100;
 
-                if Mouse.X < AbsPos.X or Mouse.X > AbsPos.X + AbsSize.X
-                    or Mouse.Y < (AbsPos.Y - 20 - 1) or Mouse.Y > AbsPos.Y + AbsSize.Y then
+                    ColorPicker:SetAnimationSpeed(Speed, false);
+                    RenderStepped:Wait();
+                until not Library:IsInputActive(Input);
+
+                Library:AttemptSave();
+            end;
+        end);
+
+        Library:GiveSignal(InputService.InputBegan:Connect(function(Input)
+            if Library:IsPrimaryInput(Input) then
+                local AbsPos, AbsSize = PickerFrameOuter.AbsolutePosition, PickerFrameOuter.AbsoluteSize;
+                local Pointer = Library:GetInputPosition(Input);
+
+                if (Pointer.X < AbsPos.X or Pointer.X > AbsPos.X + AbsSize.X
+                    or Pointer.Y < (AbsPos.Y - 20 - 1) or Pointer.Y > AbsPos.Y + AbsSize.Y)
+                    and not Library:IsMouseOverFrame(DisplayFrame, Input) then
 
                     ColorPicker:Hide();
                 end;
 
-                if not Library:IsMouseOverFrame(ContextMenu.Container) then
+                if not Library:IsMouseOverFrame(ContextMenu.Container, Input) then
                     ContextMenu:Hide()
                 end
             end;
 
             if Input.UserInputType == Enum.UserInputType.MouseButton2 and ContextMenu.Container.Visible then
-                if not Library:IsMouseOverFrame(ContextMenu.Container) and not Library:IsMouseOverFrame(DisplayFrame) then
+                if not Library:IsMouseOverFrame(ContextMenu.Container, Input) and not Library:IsMouseOverFrame(DisplayFrame, Input) then
                     ContextMenu:Hide()
                 end
             end
         end))
 
-        ColorPicker:Display();
-        ColorPicker.DisplayFrame = DisplayFrame
+        ColorPicker.DisplayFrame = DisplayFrame;
+        ColorPicker:LoadEditorFromSlot();
+        ColorPicker:RefreshOutput(true);
+        UpdateAnimationControls();
+        Library.AnimatedColorPickers[ColorPicker] = true;
 
         Options[Idx] = ColorPicker;
 
