@@ -1678,8 +1678,18 @@ do
             end)
         end
 
+        local Row = Library:Create('Frame', {
+            BackgroundTransparency = 1;
+            BorderSizePixel = 0;
+            Size = UDim2.new(1, -4, 0, 20);
+            ZIndex = 5;
+            Parent = Container;
+        });
+
+        Button.Row = Row;
         Button.Outer, Button.Inner, Button.Label = CreateBaseButton(Button)
-        Button.Outer.Parent = Container
+        Button.Outer.Size = UDim2.new(1, 0, 1, 0)
+        Button.Outer.Parent = Row
 
         InitEvents(Button)
 
@@ -1695,13 +1705,14 @@ do
 
             ProcessButtonParams('SubButton', SubButton, ...)
 
-            self.Outer.Size = UDim2.new(0.5, -2, 0, 20)
+            self.Outer.Position = UDim2.fromOffset(0, 0)
+            self.Outer.Size = UDim2.new(0.5, -2, 1, 0)
 
             SubButton.Outer, SubButton.Inner, SubButton.Label = CreateBaseButton(SubButton)
 
-            SubButton.Outer.Position = UDim2.new(1, 3, 0, 0)
-            SubButton.Outer.Size = UDim2.fromOffset(self.Outer.AbsoluteSize.X - 2, self.Outer.AbsoluteSize.Y)
-            SubButton.Outer.Parent = self.Outer
+            SubButton.Outer.Position = UDim2.new(0.5, 2, 0, 0)
+            SubButton.Outer.Size = UDim2.new(0.5, -2, 1, 0)
+            SubButton.Outer.Parent = self.Row
 
             function SubButton:AddTooltip(tooltip)
                 if type(tooltip) == 'string' then
