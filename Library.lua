@@ -25,7 +25,7 @@ getgenv().Toggles = Toggles;
 getgenv().Options = Options;
 
 local Library = {
-    Build = 'addon-x-align-v1';
+    Build = 'addon-x-align-v1'; -- make sure to remove ts or ignore
     BuildName = 'SkeetLinoria';
     BuildVersion = '1.0.0';
     Registry = {};
