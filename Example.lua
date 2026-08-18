@@ -1,5 +1,5 @@
-local Library = loadstring(readfile('https://raw.githubusercontent.com/veracrypter/skeetoria/refs/heads/main/LibraryManager.lua'))()
-local ThemeManager = loadstring(readfile('https://raw.githubusercontent.com/veracrypter/skeetoria/refs/heads/main/ThemeManager.lua'))()
+local Library = loadstring(game:HttpGet('https://raw.githubusercontent.com/veracrypter/skeetoria/refs/heads/main/Library.lua'))()
+local ThemeManager = loadstring(game:HttpGet('https://raw.githubusercontent.com/veracrypter/skeetoria/refs/heads/main/ThemeManager.lua'))()
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/veracrypter/skeetoria/refs/heads/main/SaveManager.lua"))()
 
 
