@@ -1369,7 +1369,8 @@ do
 
             Library:Create('UIPadding', {
                 Name = 'Padding',
-                PaddingLeft = UDim.new(0, 4),
+                PaddingLeft = UDim.new(0, 5),
+                PaddingRight = UDim.new(0, 5),
                 Parent = ContextMenu.Inner,
             });
 
@@ -1382,17 +1383,28 @@ do
             end
 
             local function updateMenuSize()
-                local menuWidth = 60
-                for i, label in next, ContextMenu.Inner:GetChildren() do
+                local textWidth = 0
+                local labels = {}
+
+                for _, label in next, ContextMenu.Inner:GetChildren() do
                     if label:IsA('TextLabel') then
-                        menuWidth = math.max(menuWidth, label.TextBounds.X)
+                        labels[#labels + 1] = label
+                        local width = select(1, Library:GetTextBounds(label.Text, Library.Font, label.TextSize))
+                        textWidth = math.max(textWidth, math.ceil(width))
                     end
                 end
 
+                local width = math.max(96, textWidth + 24)
                 ContextMenu.Container.Size = UDim2.fromOffset(
-                    menuWidth + 8,
+                    width,
                     ContextMenu.Inner.Layout.AbsoluteContentSize.Y + 4
                 )
+
+                for _, label in ipairs(labels) do
+                    label.Size = UDim2.new(1, -12, 0, 15)
+                    label.TextWrapped = false
+                    label.TextTruncate = Enum.TextTruncate.None
+                end
             end
 
             local MenuPositionConnection
@@ -1449,6 +1461,8 @@ do
                 Library:BindClick(Button, function()
                     Callback()
                 end)
+
+                task.defer(updateMenuSize)
             end
 
             ContextMenu:AddOption('Copy color', function()
