@@ -1146,7 +1146,7 @@ do
         local PickOuter = Library:Create('Frame', {
             BackgroundColor3 = Color3.new(0, 0, 0);
             BorderColor3 = Color3.new(0, 0, 0);
-            Size = UDim2.new(0, 44, 0, 15);
+            Size = UDim2.new(0, 20, 0, 15);
             ZIndex = 6;
             Parent = ToggleLabel;
         });
@@ -1179,7 +1179,7 @@ do
         local function ResizePicker(Text)
             local Value = tostring(Text or '')
             local Width = select(1, Library:GetTextBounds(Value, Library.Font, 13))
-            PickOuter.Size = UDim2.fromOffset(math.max(44, math.ceil(Width) + 14), 15)
+            PickOuter.Size = UDim2.fromOffset(math.max(20, math.ceil(Width) + 8), 15)
             DisplayLabel.Text = Value
         end
 
