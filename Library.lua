@@ -24,6 +24,7 @@ getgenv().Toggles = Toggles;
 getgenv().Options = Options;
 
 local Library = {
+    Build = 'keybind-dynamic-v2';
     BuildName = 'SkeetLinoria';
     BuildVersion = '1.0.0';
     Registry = {};
@@ -1176,13 +1177,17 @@ do
             Parent = PickInner;
         });
 
-        local function ResizePicker(Text)
-            local Value = tostring(Text or '')
-            local Width = select(1, Library:GetTextBounds(Value, Library.Font, 13))
-            PickOuter.Size = UDim2.fromOffset(math.max(20, math.ceil(Width) + 8), 15)
-            DisplayLabel.Text = Value
+        local function UpdatePickerWidth()
+            local Width = math.ceil(DisplayLabel.TextBounds.X)
+            PickOuter.Size = UDim2.fromOffset(math.max(16, Width + 8), 15)
         end
 
+        local function ResizePicker(Text)
+            DisplayLabel.Text = tostring(Text or '')
+            task.defer(UpdatePickerWidth)
+        end
+
+        DisplayLabel:GetPropertyChangedSignal('TextBounds'):Connect(UpdatePickerWidth)
         ResizePicker(Info.Default)
 
         local ModeSelectOuter = Library:Create('Frame', {
