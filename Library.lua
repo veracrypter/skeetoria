@@ -25,7 +25,7 @@ getgenv().Toggles = Toggles;
 getgenv().Options = Options;
 
 local Library = {
-    Build = 'keybind-dynamic-v2';
+    Build = 'addon-x-align-v1';
     BuildName = 'SkeetLinoria';
     BuildVersion = '1.0.0';
     Registry = {};
@@ -2811,6 +2811,20 @@ do
             ZIndex = 6;
             Parent = ToggleInner;
         });
+
+        local function UpdateToggleLabelWidth()
+            local ContainerWidth = math.floor(Container.AbsoluteSize.X + 0.5)
+            if ContainerWidth <= 0 then
+                return
+            end
+
+            local LeftOffset = ToggleOuter.Size.X.Offset + ToggleLabel.Position.X.Offset
+            ToggleLabel.Size = UDim2.new(0, math.max(0, ContainerWidth - LeftOffset - 4), 1, 0)
+        end
+
+        UpdateToggleLabelWidth()
+        Container:GetPropertyChangedSignal('AbsoluteSize'):Connect(UpdateToggleLabelWidth)
+        task.defer(UpdateToggleLabelWidth)
 
         Library:Create('UIListLayout', {
             Padding = UDim.new(0, 4);
